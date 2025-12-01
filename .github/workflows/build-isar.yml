@@ -2,7 +2,7 @@ name: Build and commit Isar DB
 
 on:
   push:
-    branches: [ main ]
+    branches: [ buffer ]
   workflow_dispatch:
 
 jobs:

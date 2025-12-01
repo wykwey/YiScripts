@@ -1,118 +1,137 @@
 /**
- * 湖南职院教务系统课表导入脚本
+ * 河南职院教务系统课表导入脚本
  * 适配 YIClass 项目
- * 
- * 使用方式：在教务系统登录后，点击导入按钮执行此脚本
- * 数据通过 YiClassChannel.postMessage() 发送给 Flutter
  */
 
-// 检查登录状态
-function isLoggedIn() {
-    return !window.location.href.includes("we.hnzj.edu.cn/sso/login");
-}
-
-// 解析周次字符串，如 "1-8,10,12-16" -> [1,2,3,4,5,6,7,8,10,12,13,14,15,16]
+// 解析周次字符串 "1-8,10,12-16" -> [1,2,3,4,5,6,7,8,10,12,13,14,15,16]
 function parseWeeks(str) {
     if (!str) return [];
     const weeks = new Set();
-    for (const part of str.split(",")) {
+    str.split(",").forEach(part => {
         if (part.includes("-")) {
             const [s, e] = part.split("-").map(Number);
-            for (let i = s; i <= e && i <= 20; i++) weeks.add(i);
+            for (let i = s; i <= e; i++) weeks.add(i);
         } else {
-            const n = Number(part);
-            if (n >= 1 && n <= 20) weeks.add(n);
+            weeks.add(Number(part));
         }
-    }
+    });
     return [...weeks].sort((a, b) => a - b);
 }
 
-// 生成节次数组，如 range(1, 2) -> [1, 2]
-function range(start, end) {
-    return Array.from({ length: end - start + 1 }, (_, i) => start + i);
+// 节次映射：13-14节 -> 5-6节（晚自习转换）
+function normalizePeriod(period) {
+    if (period >= 13) return period - 8;  // 13->5, 14->6
+    return period;
 }
 
-// 合并相同课程的不同时间安排
-function toYIClassFormat(rawCourses) {
-    const map = {};
-    for (const c of rawCourses) {
-        const cKey = `${c.name}|${c.position}|${c.teacher}`;
-        const sKey = `${c.day}|${c.startSection}|${c.endSection}`;
+// 转换为 YIClass 格式，合并同课程同天同周次的节次
+function toYIClassFormat(rawList) {
+    const courseMap = {};
+    
+    for (const item of rawList) {
+        const courseKey = `${item.courseName}|${item.classRoom}|${item.teacherName}`;
+        const weekday = item.weekday;
+        const weeksStr = item.weeks;
+        const start = +item.startSection;
+        const end = +item.endSection;
         
-        if (!map[cKey]) {
-            map[cKey] = { name: c.name, location: c.position, teacher: c.teacher, schedules: {} };
+        if (!courseMap[courseKey]) {
+            courseMap[courseKey] = {
+                name: item.courseName,
+                location: item.classRoom,
+                teacher: item.teacherName,
+                scheduleMap: {}
+            };
         }
-        if (!map[cKey].schedules[sKey]) {
-            map[cKey].schedules[sKey] = { weekday: c.day, periods: range(c.startSection, c.endSection), weekPattern: [...c.weeks] };
-        } else {
-            map[cKey].schedules[sKey].weekPattern = [...new Set([...map[cKey].schedules[sKey].weekPattern, ...c.weeks])].sort((a, b) => a - b);
+        
+        // 用 weekday + weeks 作为 schedule 的键，合并同天同周次
+        const scheduleKey = `${weekday}|${weeksStr}`;
+        const course = courseMap[courseKey];
+        
+        if (!course.scheduleMap[scheduleKey]) {
+            course.scheduleMap[scheduleKey] = {
+                weekday,
+                periods: new Set(),
+                weekPattern: parseWeeks(weeksStr)
+            };
+        }
+        
+        // 合并节次（转换13-14节为5-6节）
+        for (let i = start; i <= end; i++) {
+            course.scheduleMap[scheduleKey].periods.add(normalizePeriod(i));
         }
     }
-    return Object.values(map).map(c => ({ ...c, schedules: Object.values(c.schedules) }));
+    
+    // 转换为最终格式
+    return Object.values(courseMap).map(c => ({
+        name: c.name,
+        location: c.location,
+        teacher: c.teacher,
+        schedules: Object.values(c.scheduleMap).map(s => ({
+            weekday: s.weekday,
+            periods: [...s.periods].sort((a, b) => a - b),
+            weekPattern: s.weekPattern
+        }))
+    }));
 }
 
-// 获取所有周课程（遍历20周）
+// 获取课程数据
 async function fetchCourses(year, term) {
-    const all = [];
+    const allItems = [];
+    const seen = new Set();
+    
     for (let week = 1; week <= 20; week++) {
-        try {
-            const res = await fetch(`https://one.hnzj.edu.cn/kcb/api/course?schoolYear=${year}&schoolTerm=${term}&week=${week}`);
-            const { response } = await res.json();
-            response.forEach(day => day.data.forEach(c => {
-                const weeks = parseWeeks(c.weeks);
-                if (weeks.length) all.push({
-                    name: c.courseName, teacher: c.teacherName, position: c.classRoom,
-                    day: day.week, startSection: +c.startSection, endSection: +c.endSection, weeks
-                });
-            }));
-        } catch (e) { /* ignore */ }
+        const res = await fetch(`https://one.hnzj.edu.cn/kcb/api/course?schoolYear=${year}&schoolTerm=${term}&week=${week}`);
+        const { response } = await res.json();
+        
+        response.forEach(day => {
+            day.data.forEach(c => {
+                const key = `${c.courseName}|${c.classRoom}|${c.teacherName}|${day.week}|${c.startSection}|${c.endSection}|${c.weeks}`;
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    allItems.push({
+                        courseName: c.courseName,
+                        classRoom: c.classRoom,
+                        teacherName: c.teacherName,
+                        weekday: day.week,
+                        startSection: c.startSection,
+                        endSection: c.endSection,
+                        weeks: c.weeks
+                    });
+                }
+            });
+        });
     }
-    return toYIClassFormat(all);
+    
+    return toYIClassFormat(allItems);
 }
 
-// 主流程
-(async function run() {
-    // 检查登录状态
-    if (!isLoggedIn()) {
+(async function() {
+    if (window.location.href.includes("we.hnzj.edu.cn/sso/login")) {
         window.YiClassChannel.postMessage(JSON.stringify({ error: "请先登录教务系统" }));
         return;
     }
     
-    try {
-        // 获取学年学期列表
-        const res = await fetch("https://one.hnzj.edu.cn/kcb/api/schoolyearTerms");
-        const { response: yearTerms } = await res.json();
-        
-        // 使用当前学期（默认第一个）
-        const year = yearTerms.schoolYears[0]?.value;
-        const term = yearTerms.schoolTerms[0]?.value;
-        
-        if (!year || !term) {
-            window.YiClassChannel.postMessage(JSON.stringify({ error: "无法获取学年学期信息" }));
-            return;
-        }
-        
-        // 获取课程数据
-        const courses = await fetchCourses(year, term);
-        
-        if (!courses.length) {
-            window.YiClassChannel.postMessage(JSON.stringify({ error: "未找到课程数据" }));
-            return;
-        }
-        
-        // 成功：发送课表数据
-        const timetable = { 
-            name: `课表`, 
-            courses 
-        };
-        
-        // 测试：打印结果
-        console.log('=== 导入结果 ===');
-        console.log('课程数量:', courses.length);
-        console.log('课表数据:', JSON.stringify(timetable, null, 2));
-        
-        window.YiClassChannel.postMessage(JSON.stringify(timetable));
-    } catch (e) {
-        window.YiClassChannel.postMessage(JSON.stringify({ error: "导入出错: " + e.message }));
+    const res = await fetch("https://one.hnzj.edu.cn/kcb/api/schoolyearTerms");
+    const { response: yearTerms } = await res.json();
+    const year = yearTerms.schoolYears[0]?.value;
+    const term = yearTerms.schoolTerms[0]?.value;
+    
+    if (!year || !term) {
+        window.YiClassChannel.postMessage(JSON.stringify({ error: "无法获取学年学期信息" }));
+        return;
     }
+    
+    const courses = await fetchCourses(year, term);
+    
+    if (!courses.length) {
+        window.YiClassChannel.postMessage(JSON.stringify({ error: "未找到课程数据" }));
+        return;
+    }
+    
+    const timetable = { name: "课表", courses };
+    console.log('=== 导入结果 ===');
+    console.log('课程数量:', courses.length);
+    console.log('课表数据:', JSON.stringify(timetable, null, 2));
+    window.YiClassChannel.postMessage(JSON.stringify(timetable));
 })();
