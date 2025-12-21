@@ -19,19 +19,19 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 2️ Setup Dart
-      - name: Setup Dart
-        uses: dart-lang/setup-dart@v1
+      # 2️ Setup Flutter
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
         with:
-          sdk: '3.5.0'
+          flutter-version: '3.35.7'
 
       # 3️ Install dependencies
       - name: Pub get
-        run: dart pub get
+        run: flutter pub get
 
       # 4️ Build SQLite database
       - name: Build SQLite DB
-        run: dart run bin/build_sqlite.dart
+        run: flutter pub run bin/build_sqlite.dart
 
       # 5️ Commit index.db to isolated branch
       - name: Commit index.db to index-data-sqlite branch
